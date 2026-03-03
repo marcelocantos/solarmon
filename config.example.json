@@ -1,0 +1,19 @@
+{
+    "inverters": [
+        {
+            "name": "Inverter-1",
+            "ip": "192.168.1.166"
+        },
+        {
+            "name": "Inverter-2",
+            "ip": "192.168.1.XXX",
+            "_comment": "Update this IP after moving from guest WiFi"
+        }
+    ],
+    "pushover_user": "your-pushover-user-key",
+    "pushover_token": "your-pushover-app-token",
+    "sems_account": "your-sems-email@example.com",
+    "sems_password": "your-sems-password",
+    "ping_timeout": 5,
+    "ping_count": 3
+}
