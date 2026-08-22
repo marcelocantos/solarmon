@@ -1,0 +1,427 @@
+# hygiene.yaml — declared, drift-validated hygiene posture for solarmon.
+# Schema reference: the `hygiene` skill (~/.claude/skills/hygiene/SKILL.md).
+# Validate with `/hygiene`; aggregate the fleet with `/hygiene fleet`. Sibling
+# to bullseye.yaml: bullseye tracks aspirational state ("achieve X"); hygiene
+# tracks steady-state ("we maintain X").
+#
+# Tiers are PER DIMENSION (schema v1). For each dimension the held tier is the
+# highest T such that every item in that dimension with tier <= T is satisfied.
+# `floors` is the per-dimension ratchet: a dimension dropping below its floor
+# is DRIFT and fails the check. `aspires` is the gap horizon for reporting.
+# `enforce` is intent-only metadata and does NOT affect tiers.
+#
+# Reality: a 318-line bash cron glue script (ping + SEMS + Pushover). Apache-2.0
+# LICENSE, .gitignore of live secrets/state, squash-only GitHub settings, default
+# branch master. No README, tests, CI, Makefile, tags, AGENTS.md, or bullseye.
+
+schema_version: 1
+
+repo: solarmon
+aspires: 3
+floors:            # per-dimension held-tier ratchet; below floor => DRIFT
+  correctness: 0   # no tests, no CI
+  security: 1      # config.json gitignored; GitHub secret scanning off
+  quality: 0       # shellcheck not gated; currently reports notes
+  deps: 0          # no lockfile (jq/python3/curl/ping from PATH)
+  release: 0       # no tags or release workflow
+  governance: 0    # LICENSE + .gitignore; no README
+  build: 1         # /bin/bash -n solarmon.sh; no CI
+  docs: 0          # config.example.json; no README
+  perf: 0          # no benchmarks
+  vcs: 1           # default branch master; unprotected
+  agent: 0         # no AGENTS.md / bullseye.yaml
+
+tiers:
+  1: baseline    # LICENSE + README + .gitignore; tests build & run
+  2: maintained  # full matrix, examples run, lint/format, release + governance
+  3: hardened    # formal specs, security scanning, SBOM/signing, fuzzing, perf
+
+# evidence (one key per item): ci_job | ci_step{workflow,name} | make_target |
+#   command | file{path,matches?} | gh_setting{key,equals} | scanner{tool,config?}
+#   | manual{last_verified} | absent:<evidence>
+# state: enforced|present|manual|planned|skipped  (reason required if planned/skipped)
+# cadence: continuous|per-release|periodic:<dur>|once-must-hold
+# enforce: blocking|warning|informational  (intent only; does not affect tiers)
+
+items:
+
+  # ============================== CORRECTNESS =============================
+  - id: correctness.tests
+    dim: correctness
+    desc: Automated tests run as a standing gate
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 1
+    reason: No test tree, Makefile, or CI; the product is a single untested bash script.
+    evidence: {absent: {ci_job: ci.yml#test}}
+
+  - id: correctness.macos-bash32
+    dim: correctness
+    desc: CI asserts /bin/bash is 3.x and runs the suite with bash 3.2 first on PATH
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 3
+    reason: >-
+      Shebang is /bin/bash (macOS 3.2.57). No GitHub Actions; syntax is only
+      checked locally via `bash -n`.
+    evidence: {absent: {ci_job: ci.yml#bash32}}
+
+  - id: correctness.fuzzing
+    dim: correctness
+    desc: Fuzz harnesses over parsers or protocol state
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: Cron glue over ping/SEMS/Pushover; no parser corpus worth a fuzz job.
+    evidence: {absent: {ci_job: ci.yml#fuzz}}
+
+  # =========================== SECURITY / SUPPLY ==========================
+  - id: security.secrets-gitignored
+    dim: security
+    desc: Live credentials and alert state are gitignored (config.json, .state.json)
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: .gitignore, matches: '(?m)^config\.json$'}}
+
+  - id: security.secret-scan
+    dim: security
+    desc: GitHub secret scanning enabled on the public repo
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    reason: Public repo; secret_scanning.status is disabled.
+    evidence:
+      absent:
+        gh_setting:
+          key: security_and_analysis.secret_scanning.status
+          equals: enabled
+
+  - id: security.push-protection
+    dim: security
+    desc: Secret-scanning push protection enabled
+    state: planned
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    reason: secret_scanning_push_protection.status is disabled.
+    evidence:
+      absent:
+        gh_setting:
+          key: security_and_analysis.secret_scanning_push_protection.status
+          equals: enabled
+
+  - id: security.gitleaks
+    dim: security
+    desc: Secret scanning (gitleaks) in pre-commit and/or CI
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 3
+    reason: No gitleaks config or CI; GitHub native scanning is also off.
+    evidence: {absent: {scanner: {tool: gitleaks}}}
+
+  - id: security.sast
+    dim: security
+    desc: Static application security testing (CodeQL)
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: 318-line bash glue; CodeQL would not add a useful signal over shellcheck.
+    evidence: {absent: {ci_job: ci.yml#codeql}}
+
+  - id: security.dependabot
+    dim: security
+    desc: Dependabot security updates enabled
+    state: skipped
+    cadence: periodic:30d
+    enforce: informational
+    tier: 3
+    reason: No language lockfile; Dependabot security updates are disabled.
+    evidence:
+      absent:
+        gh_setting:
+          key: security_and_analysis.dependabot_security_updates.status
+          equals: enabled
+
+  - id: security.actions-perms
+    dim: security
+    desc: GitHub Actions default token permissions scoped to least privilege
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: No workflows exist to permission.
+    evidence: {absent: {ci_step: {workflow: ci.yml, name: permissions}}}
+
+  # ============================== CODE QUALITY ============================
+  - id: quality.shellcheck
+    dim: quality
+    desc: shellcheck is a CI gate over solarmon.sh
+    state: planned
+    cadence: continuous
+    enforce: warning
+    tier: 2
+    reason: >-
+      shellcheck is not wired to CI. A local run reports SC2329 (unused
+      sems_login) and SC2001 (sed vs parameter expansion).
+    evidence: {absent: {ci_step: {workflow: ci.yml, name: shellcheck}}}
+
+  - id: quality.format
+    dim: quality
+    desc: Shell sources are formatter-clean in CI
+    state: skipped
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: No shfmt (or equivalent) config; formatting is by-hand convention.
+    evidence: {absent: {ci_step: {workflow: ci.yml, name: shfmt}}}
+
+  # =========================== DEPENDENCY HEALTH ==========================
+  - id: deps.lockfile
+    dim: deps
+    desc: A lockfile pins the dependency graph
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 2
+    reason: No language package manager; runtime is jq, python3, curl, and ping from PATH.
+    evidence: {absent: {file: {path: go.sum}}}
+
+  - id: deps.dependabot
+    dim: deps
+    desc: Dependabot (or equivalent) opens update PRs
+    state: skipped
+    cadence: periodic:30d
+    enforce: informational
+    tier: 3
+    reason: No manifests for Dependabot to watch; no .github/dependabot.yml.
+    evidence: {absent: {file: {path: .github/dependabot.yml}}}
+
+  # ========================== RELEASE & VERSIONING =======================
+  - id: release.changelog
+    dim: release
+    desc: A maintained CHANGELOG records user-visible changes per release
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 2
+    reason: No tags or GitHub releases; history is git commits only.
+    evidence: {absent: {file: {path: CHANGELOG.md}}}
+
+  - id: release.ci-built
+    dim: release
+    desc: Release artifacts are built by CI, never locally
+    state: skipped
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: Personal cron-deployed script; no published artifacts or release workflow.
+    evidence: {absent: {ci_job: release.yml#build}}
+
+  # ============================ GOVERNANCE / META ========================
+  - id: governance.license
+    dim: governance
+    desc: Apache-2.0 LICENSE present
+    state: present
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {file: {path: LICENSE, matches: 'Apache License'}}
+
+  - id: governance.readme
+    dim: governance
+    desc: README present
+    state: planned
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    reason: No README.md; GitHub description is empty. Setup lives only in script comments.
+    evidence: {absent: {file: {path: README.md}}}
+
+  - id: governance.gitignore
+    dim: governance
+    desc: .gitignore covers live config, state, IDE/OS files
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: .gitignore, matches: '(?m)^\.state\.json$'}}
+
+  - id: governance.squash-only
+    dim: governance
+    desc: Repo is squash-merge only
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 2
+    evidence: {gh_setting: {key: allow_merge_commit, equals: false}}
+
+  - id: governance.delete-branch
+    dim: governance
+    desc: Head branch is deleted on merge
+    state: enforced
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    evidence: {gh_setting: {key: delete_branch_on_merge, equals: true}}
+
+  - id: governance.security-md
+    dim: governance
+    desc: SECURITY.md documents the vulnerability-disclosure process
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Public repo without a published disclosure policy.
+    evidence: {absent: {file: {path: SECURITY.md}}}
+
+  - id: governance.codeowners
+    dim: governance
+    desc: CODEOWNERS names reviewers for the tree
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Sole-owner repo; no review-routing surface.
+    evidence: {absent: {file: {path: CODEOWNERS}}}
+
+  # ================================= BUILD ===============================
+  - id: build.syntax
+    dim: build
+    desc: solarmon.sh parses under the shebang runtime (/bin/bash -n)
+    state: present
+    cadence: continuous
+    enforce: warning
+    tier: 1
+    evidence: {command: /bin/bash -n solarmon.sh}
+
+  - id: build.ci
+    dim: build
+    desc: CI workflow runs on every push
+    state: planned
+    cadence: continuous
+    enforce: blocking
+    tier: 2
+    reason: No .github/workflows (Actions total_count 0).
+    evidence: {absent: {file: {path: .github/workflows/ci.yml}}}
+
+  - id: build.makefile
+    dim: build
+    desc: Makefile is a local build/test front door
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: Single interpreted bash script; no compile step.
+    evidence: {absent: {file: {path: Makefile}}}
+
+  # ============================ DOCUMENTATION ============================
+  - id: docs.example-config
+    dim: docs
+    desc: config.example.json documents the required config shape with placeholders
+    state: present
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    evidence: {file: {path: config.example.json, matches: 'pushover_user'}}
+
+  - id: docs.readme
+    dim: docs
+    desc: README documents install, cron, and config.json setup
+    state: planned
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    reason: No README.md; operator path is cron plus a gitignored config.json.
+    evidence: {absent: {file: {path: README.md}}}
+
+  - id: docs.md-links
+    dim: docs
+    desc: Internal markdown links resolve (no dead cross-references)
+    state: planned
+    cadence: continuous
+    enforce: informational
+    tier: 3
+    reason: No link checker; the only markdown is a one-shot entropy audit.
+    evidence: {absent: {ci_job: ci.yml#docs}}
+
+  # ============================== PERFORMANCE ===========================
+  - id: perf.benchmarks
+    dim: perf
+    desc: Benchmark suite exists
+    state: planned
+    cadence: per-release
+    enforce: informational
+    tier: 3
+    reason: Hourly cron glue; latency is not a tracked property.
+    evidence: {absent: {file: {path: benches}}}
+
+  # ============================== VCS / HISTORY =========================
+  - id: vcs.default-branch
+    dim: vcs
+    desc: Default branch is master
+    state: enforced
+    cadence: once-must-hold
+    enforce: blocking
+    tier: 1
+    evidence: {gh_setting: {key: default_branch, equals: master}}
+
+  - id: vcs.branch-protection
+    dim: vcs
+    desc: Default branch is protected (required checks / no force-push)
+    state: planned
+    cadence: once-must-hold
+    enforce: warning
+    tier: 2
+    reason: Branch protection 404; sole-owner pushes land on master unprotected.
+    evidence:
+      absent:
+        command: gh api repos/marcelocantos/solarmon/branches/master/protection --jq .url
+
+  - id: vcs.pre-commit-hook
+    dim: vcs
+    desc: Committed git hooks (scripts/hooks) gate locally before commit
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: No scripts/hooks; core.hooksPath is the default .git/hooks.
+    evidence: {absent: {file: {path: scripts/hooks/pre-commit}}}
+
+  - id: vcs.lfs-binaries
+    dim: vcs
+    desc: Large/binary assets tracked via Git LFS
+    state: skipped
+    cadence: once-must-hold
+    enforce: informational
+    tier: 3
+    reason: No large binary assets; the tree is bash + JSON + markdown.
+    evidence: {absent: {file: {path: .gitattributes}}}
+
+  # =================== AGENT-READINESS / ONBOARDING ====================
+  - id: agent.agents-md
+    dim: agent
+    desc: AGENTS.md (or CLAUDE.md) present so agents can discover project conventions
+    state: planned
+    cadence: once-must-hold
+    enforce: warning
+    tier: 1
+    reason: No in-repo agent instruction file.
+    evidence: {absent: {file: {path: AGENTS.md}}}
+
+  - id: agent.bullseye
+    dim: agent
+    desc: bullseye.yaml present (convergence targets discoverable)
+    state: planned
+    cadence: once-must-hold
+    enforce: informational
+    tier: 2
+    reason: No bullseye.yaml; followable work is not an intent ledger in this repo.
+    evidence: {absent: {file: {path: bullseye.yaml}}}
