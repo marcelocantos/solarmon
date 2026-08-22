@@ -7,6 +7,11 @@
 
 set -euo pipefail
 
+# macOS cron PATH is typically /usr/bin:/bin and omits /sbin, where ping lives.
+# Keep the caller PATH (Homebrew jq/python3) after sbin.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:${PATH:-/usr/bin:/bin}"
+export PATH
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CONFIG="${SOLARMON_CONFIG:-$SCRIPT_DIR/config.json}"
 STATE_FILE="${SOLARMON_STATE:-$SCRIPT_DIR/.state.json}"
